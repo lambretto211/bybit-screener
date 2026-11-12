@@ -6,49 +6,69 @@ import pandas as pd
 st.set_page_config(page_title="Bybit Скринер", page_icon="🔥", layout="wide")
 
 st.title("🔥 Bybit Спот: Всплески объёма")
-st.caption("Топ-50 монет · обновление каждые 30 сек")
+st.caption("Топ-50 монет")
 
 @st.cache_data(ttl=30)
 def get_data():
-    url = "https://api.bybit.com/v5/market/tickers"
-    r = requests.get(url, params={"category": "spot"}, timeout=10)
-    data = r.json()["result"]["list"]
-    usdt = [t for t in data if t["symbol"].endswith("USDT")]
-    usdt.sort(key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
-    top = usdt[:50]
-    rows = []
-    for t in top:
-        sym = t["symbol"]
-        price = float(t.get("lastPrice", 0))
-        change = float(t.get("price24hPcnt", 0)) * 100
-        vol24 = float(t.get("turnover24h", 0))
-        kr = requests.get("https://api.bybit.com/v5/market/kline",
-            params={"category":"spot","symbol":sym,"interval":"5","limit":5}, timeout=10)
-        kl = kr.json()["result"]["list"]
-        if len(kl) < 2:
-            continue
-        cur = float(kl[0][6])
-        avg = sum(float(k[6]) for k in kl[1:]) / (len(kl)-1)
-        mult = cur / avg if avg > 0 else 0
-        if mult >= 3.0 and cur >= 50000:
-            rows.append({
-                "Монета": sym.replace("USDT",""),
-                "Цена": price,
-                "Δ%": round(change,2),
-                "Объём 5м $": int(cur),
-                "Средний $": int(avg),
-                "×Всплеск": round(mult,1)
-            })
-    if rows:
-        df = pd.DataFrame(rows).sort_values("×Всплеск", ascending=False)
-        return df
-    return pd.DataFrame()
+    try:
+        url = "https://api.bybit.com/v5/market/tickers"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, params={"category": "spot"}, headers=headers, timeout=15)
+        
+        if r.status_code != 200:
+            st.error(f"API вернул код: {r.status_code}")
+            return pd.DataFrame()
+        
+        data = r.json()
+        
+        if "result" not in data or "list" not in data["result"]:
+            st.error("Неверный формат ответа от Bybit")
+            return pd.DataFrame()
+        
+        tickers = data["result"]["list"]
+        usdt = [t for t in tickers if t["symbol"].endswith("USDT")]
+        usdt.sort(key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
+        top = usdt[:50]
+        
+        rows = []
+        for i, t in enumerate(top):
+            sym = t["symbol"]
+            price = float(t.get("lastPrice", 0))
+            change = float(t.get("price24hPcnt", 0)) * 100
+            vol24 = float(t.get("turnover24h", 0))
+            
+            # Проверяем только топ-20 для скорости
+            if i < 20 and vol24 > 1000000:  # только с оборотом > $1M
+                rows.append({
+                    "Монета": sym.replace("USDT",""),
+                    "Цена": price,
+                    "Δ24ч": f"{change:+.2f}%",
+                    "Оборот 24ч $": f"{vol24:,.0f}",
+                })
+        
+        return pd.DataFrame(rows)
+        
+    except requests.exceptions.Timeout:
+        st.error("Превышено время ожидания API")
+        return pd.DataFrame()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Ошибка соединения: {str(e)[:100]}")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Неизвестная ошибка: {str(e)[:100]}")
+        return pd.DataFrame()
 
 df = get_data()
+
 if df.empty:
-    st.info("Сейчас нет сильных всплесков. Скринер следит...")
+    st.warning("Не удалось загрузить данные. Попробуй обновить страницу.")
+    st.info("💡 Bybit может блокировать частые запросы. Подожди 1-2 минуты и обнови.")
 else:
-    st.success(f"🎯 Найдено сигналов: {len(df)}")
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.success(f"Загружено монет: {len(df)}")
+    st.dataframe(df, hide_index=True, use_container_width=True, height=600)
 
 st.caption(f"Обновлено: {time.strftime('%H:%M:%S')}")
+
+if st.button("🔄 Обновить"):
+    st.cache_data.clear()
+    st.rerun()
